@@ -29,6 +29,7 @@
 #include "semphr.h"
 #include "event_groups.h"
 #include <stdio.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,7 +50,8 @@
 osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 SemaphoreHandle_t CountingSem;
-int resource[4] = {10,20,30,40};
+QueueHandle_t Queue;
+BaseType_t status;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,10 +60,10 @@ static void MX_GPIO_Init(void);
 void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-static void task_1(void* params);
-static void task_2(void* params);
-static void task_3(void* params);
-static void task_4(void* params);
+static void writing_task_1(void* params);
+static void writing_task_2(void* params);
+static void reading_task_1(void* params);
+static void reading_task_2(void* params);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -77,7 +79,6 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 	TaskHandle_t t1, t3, t2, t4;
-	BaseType_t status;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -100,29 +101,32 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
   CountingSem = xSemaphoreCreateCounting(4,0);
+  Queue = xQueueCreate( 2, sizeof( uint8_t ) );
 
-  if(CountingSem != NULL)
+  if(Queue != NULL && CountingSem != NULL)
   {
     //Task 1
-    status = xTaskCreate(task_1, "Task 1", 200, NULL, 2, &t1);
+    status = xTaskCreate(writing_task_1, "Task 1", 200, NULL, 0, &t1);
     configASSERT(status == pdPASS);
 
     //Task 2
-    status = xTaskCreate(task_2, "Task 2", 200, NULL, 2, &t2);
+    status = xTaskCreate(writing_task_2, "Task 2", 200, NULL, 4, &t2);
     configASSERT(status == pdPASS);
 
     //Task 3
-    status = xTaskCreate(task_3, "Task 3", 200, NULL, 2, &t3);
+    status = xTaskCreate(reading_task_1, "Task 3", 200, NULL, 3, &t3);
     configASSERT(status == pdPASS);
 
     //Task 4
-    status = xTaskCreate(task_4, "Task 4", 200, NULL, 2, &t4);
+    status = xTaskCreate(reading_task_2, "Task 4", 200, NULL, 7, &t4);
     configASSERT(status == pdPASS);
 
     xSemaphoreGive(CountingSem);
     xSemaphoreGive(CountingSem);
     xSemaphoreGive(CountingSem);
     xSemaphoreGive(CountingSem);
+    printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+
     vTaskStartScheduler();
   }
 
@@ -356,57 +360,99 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void task_1(void* params)
+static void writing_task_1(void* params)
 {
+	uint8_t var;
 	while(1)
 	{
-		xSemaphoreTake(CountingSem, portMAX_DELAY);
-		printf("%s: resource[0]=%d\n", __func__, resource[0]);
-		HAL_GPIO_TogglePin(GPIOD, LD4_Pin);
-		vTaskDelay( pdMS_TO_TICKS( 250 ) );
-		xSemaphoreGive(CountingSem);
-		vTaskDelay( pdMS_TO_TICKS( 5 ) );
-	}
-}
-
-static void task_2(void* params)
-{
-	while(1)
-	{
-		xSemaphoreTake(CountingSem, portMAX_DELAY);
-		printf("%s: resource[1]=%d\n", __func__, resource[1]);
-		HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
-		vTaskDelay( pdMS_TO_TICKS( 500 ) );
-		xSemaphoreGive(CountingSem);
-		vTaskDelay( pdMS_TO_TICKS( 5 ) );
-	}
-}
-
-static void task_3(void* params)
-{
-	while(1)
-	{
-		xSemaphoreTake(CountingSem, portMAX_DELAY);
-		printf("%s: resource[2]=%d\n", __func__, resource[2]);
-		HAL_GPIO_TogglePin(GPIOD, LD5_Pin);
-		vTaskDelay( pdMS_TO_TICKS( 750 ) );
-		xSemaphoreGive(CountingSem);
-		vTaskDelay( pdMS_TO_TICKS( 5 ) );
-	}
-}
-
-static void task_4(void* params)
-{
-	while(1)
-	{
-		xSemaphoreTake(CountingSem, portMAX_DELAY);
+		var = rand()%100; // Some random number
+		xSemaphoreTake(CountingSem, ( TickType_t ) 10);
 		printf("%s: Semaphore taken.\n", __func__);
 		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
-		printf("%s: resource[3]=%d\n", __func__, resource[3]);
-		HAL_GPIO_TogglePin(GPIOD, LD6_Pin);
-		vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+
+		/* Write to the queue */
+		if( xQueueSend( Queue, &var, ( TickType_t ) 10 ) != pdPASS )
+				printf("%s: Could not add data to queue!\n", __func__);
+		else
+			printf("%s: Data added to the queue: %d\n", __func__, var);
+
+		HAL_GPIO_TogglePin(GPIOD, LD4_Pin);
+		vTaskDelay( pdMS_TO_TICKS( 100 ) );
+
 		xSemaphoreGive(CountingSem);
-		vTaskDelay( pdMS_TO_TICKS( 5 ) );
+		printf("%s: Semaphore given.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+	}
+}
+
+static void writing_task_2(void* params)
+{
+	uint8_t var;
+	while(1)
+	{
+		var = (rand()%100) *2; // Some random number
+		xSemaphoreTake(CountingSem, ( TickType_t ) 10);
+		printf("%s: Semaphore taken.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+
+		/* Write to the queue */
+		if( xQueueSend( Queue, &var, ( TickType_t ) 10 ) != pdPASS )
+			printf("%s: Could not add data to queue!\n", __func__);
+		else
+			printf("%s: Data added to the queue: %d\n", __func__, var);
+
+		HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
+		vTaskDelay( pdMS_TO_TICKS( 100 ) );
+
+		xSemaphoreGive(CountingSem);
+		printf("%s: Semaphore given.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+	}
+}
+
+static void reading_task_1(void* params)
+{
+	uint8_t value;
+	while(1)
+	{
+		xSemaphoreTake(CountingSem, ( TickType_t ) 20);
+		printf("%s: Semaphore taken.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+
+		/* Read from the queue */
+		if( xQueueReceive( Queue, (void*)&value, ( TickType_t ) 20 ) == pdPASS )
+			printf("%s: Value read from the queue: %d\n", __func__, value);
+		else	printf("%s: Could not read data from the queue!\n", __func__);
+
+		HAL_GPIO_TogglePin(GPIOD, LD6_Pin);
+		vTaskDelay( pdMS_TO_TICKS( 100 ) );
+
+		xSemaphoreGive(CountingSem);
+		printf("%s: Semaphore given.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+	}
+}
+
+static void reading_task_2(void* params)
+{
+	uint8_t value;
+	while(1)
+	{
+		xSemaphoreTake(CountingSem, ( TickType_t ) 20);
+		printf("%s: Semaphore taken.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
+
+		/* Read from the queue */
+		if( xQueueReceive( Queue, (void*)&value, ( TickType_t ) 20 ) == pdPASS )
+			printf("%s: Value read from the queue: %d\n", __func__, value);
+		else	printf("%s: Could not read data from the queue!\n", __func__);
+
+		HAL_GPIO_TogglePin(GPIOD, LD5_Pin);
+		vTaskDelay( pdMS_TO_TICKS( 100 ) );
+
+		xSemaphoreGive(CountingSem);
+		printf("%s: Semaphore given.\n", __func__);
+		printf("%s: Semaphore count: %d\n", __func__, uxSemaphoreGetCount(CountingSem));
 	}
 }
 
